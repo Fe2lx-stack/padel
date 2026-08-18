@@ -173,6 +173,15 @@ tr.even{background:rgba(255,255,255,0.02);}
 .step-btn:hover:not(:disabled){border-color:var(--accent);color:var(--accent);}
 .step-btn:disabled{opacity:0.3;cursor:not-allowed;}
 
+.app-footer{
+  max-width:680px;margin:0 auto;padding:0 16px 32px;
+  display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap;
+  font-size:11px;color:var(--dim);line-height:1.6;text-align:center;
+}
+.app-footer a{color:var(--muted);text-decoration:none;}
+.app-footer a:hover{color:var(--text);text-decoration:underline;}
+.app-footer .sep{color:var(--border);}
+
 @media (max-width:380px){.col-hide-xs{display:none;}}
 @media (max-width:480px){.col-hide-sm{display:none;}}
 @media (max-width:560px){
@@ -183,6 +192,12 @@ tr.even{background:rgba(255,255,255,0.02);}
 </head>
 <body>
 <div id="app"></div>
+
+<div class="app-footer">
+  <span>No tracking, no cookies — your tournament stays in this browser.</span>
+  <span class="sep">·</span>
+  <a href="privacy.html">Privacy</a>
+</div>
 
 <script>
 "use strict";
