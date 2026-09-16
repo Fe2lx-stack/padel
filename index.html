@@ -150,13 +150,15 @@ tr.even{background:rgba(255,255,255,0.02);}
 .seg-wide .seg-btn{flex:1;min-width:120px;font-size:13px;}
 .seg-note{font-size:11px;color:var(--muted);line-height:1.5;margin-top:10px;}
 
-.rounds-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+.rounds-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.confirm-inline{font-size:12px;color:var(--muted);line-height:1.5;flex:1 1 100%;}
+.action-hint{font-size:11px;color:var(--dim);line-height:1.5;flex:1 1 100%;}
 .rounds-input{
-  width:80px;height:40px;padding:0 12px;background:var(--surfaceHigh);border:1px solid var(--border);
+  width:72px;height:40px;padding:0 10px;background:var(--surfaceHigh);border:1px solid var(--border);
   border-radius:8px;color:var(--text);font-size:15px;font-weight:700;text-align:center;outline:none;font-family:inherit;
 }
 .rounds-input:focus{border-color:var(--accent);box-shadow:0 0 0 2px rgba(200,240,0,0.15);}
-.rounds-note{font-size:11px;color:var(--muted);line-height:1.4;flex:1;min-width:150px;}
+.rounds-note{font-size:11px;color:var(--muted);line-height:1.4;flex:1 1 100%;}
 
 .count-row{display:flex;align-items:center;gap:8px;margin-bottom:14px;}
 .count-input{
@@ -602,6 +604,7 @@ function load() {
     }
     d.scores = d.scores || {};
     d.scoring = d.scoring === "points" ? "points" : "win";
+    d.entry = d.entry === "teamnames" ? "teamnames" : "players";
     d.courts = d.courts || 1;
     return d;
   } catch (e) { return null; }
@@ -655,9 +658,11 @@ var draft = null;
 function freshDraft() {
   return {
     format: "americano",
+    entry: "players",          // fixed pairs: name the players, or name the teams
     scoring: "win",
     names: ["", "", "", "", ""],
     teams: [["", ""], ["", ""], ["", ""], ["", ""]],
+    teamNames: ["", "", "", ""],
     courts: 1,
     rounds: 5,
     roundsTouched: false
@@ -684,6 +689,8 @@ function renderSetup() {
   var courtsWrap = el("div", { cls: "seg" });
   var countLabel = el("div", { cls: "field-label", text: "" });
   var listLabel  = el("div", { cls: "field-label", text: "" });
+  var entryBlock = el("div", {});
+  var entryWrap  = el("div", { cls: "seg seg-wide" });
   var hintText   = el("p", { cls: "setup-hint", text: "" });
   var countInput = el("input", { cls: "count-input", type: "number", inputmode: "numeric" });
   var countNote  = el("div", { cls: "count-note", text: "" });
@@ -691,18 +698,27 @@ function renderSetup() {
   var plusBtn    = el("button", { cls: "step-btn", type: "button", text: "+" });
   var roundsInput= el("input", { cls: "rounds-input", type: "number", min: "1", inputmode: "numeric" });
   var roundsNote = el("div", { cls: "rounds-note", text: "" });
+  var roundsMinus= el("button", { cls: "step-btn", type: "button", text: "−" });
+  var roundsPlus = el("button", { cls: "step-btn", type: "button", text: "+" });
+  var actionsRow = el("div", { cls: "setup-actions" });
   var preview    = el("div", { cls: "setup-preview", text: "" });
   var countEditing = false;
+  var roundsEditing = false;
+  var confirmRandomize = false;
   var stash = [];
 
   var isPairs = function () { return draft.format === "pairs"; };
+  var byTeamName = function () { return isPairs() && draft.entry === "teamnames"; };
   var count   = function () { return isPairs() ? draft.teams.length : draft.names.length; };
   var minC    = function () { return isPairs() ? MIN_TEAMS : MIN_PLAYERS; };
   var maxC    = function () { return isPairs() ? MAX_TEAMS : MAX_PLAYERS; };
   var maxRounds = function () { return Math.max(1, fullRoundsFor(draft)); };
 
   function syncNames() {
-    if (isPairs()) {
+    if (byTeamName()) {
+      var tn = listWrap.querySelectorAll(".name-input");
+      draft.teamNames = Array.prototype.map.call(tn, function (i) { return i.value; });
+    } else if (isPairs()) {
       var rows = listWrap.querySelectorAll(".team-row");
       draft.teams = Array.prototype.map.call(rows, function (row) {
         var ins = row.querySelectorAll(".name-input");
@@ -714,12 +730,94 @@ function renderSetup() {
     }
   }
 
+  function setRounds(k) {
+    draft.roundsTouched = true;
+    draft.rounds = Math.max(1, Math.min(maxRounds(), k));
+    refreshAll();
+  }
+
+  /* Turn a list of raw slots into final names: anything typed is kept, blanks
+     become "Player 1", "Player 2" … by position. If such a name was already
+     typed in by hand somewhere, the next free number is used instead, so the
+     result never contains duplicates. */
+  function fillNames(slots, prefix) {
+    prefix = prefix || "Player";
+    var taken = {};
+    slots.forEach(function (s) { var v = s.trim(); if (v) taken[v.toLowerCase()] = 1; });
+    var extra = slots.length;
+    return slots.map(function (s, i) {
+      var v = s.trim();
+      if (v !== "") return v;
+      var name = prefix + " " + (i + 1);
+      while (taken[name.toLowerCase()]) { extra++; name = prefix + " " + extra; }
+      taken[name.toLowerCase()] = 1;
+      return name;
+    });
+  }
+
+  function pairingFingerprint(teams) {
+    return teams.map(function (t) {
+      return t.map(function (s) { return s.trim(); }).sort().join(" ");
+    }).sort().join("");
+  }
+
+  /* Shuffle everybody and deal them into the teams again. Blank slots count as
+     the players they would become anyway ("Player 1", "Player 2" …), so this
+     works even when nobody felt like typing names — the numbers are written
+     into the fields and then mixed. */
+  function randomizeTeams() {
+    syncNames();
+
+    var flat = [];
+    draft.teams.forEach(function (t) { flat.push(t[0], t[1]); });
+    var pool = fillNames(flat);
+
+    var current = [];
+    for (var i = 0; i < pool.length; i += 2) current.push([pool[i], pool[i + 1]]);
+    var before = pairingFingerprint(current);
+
+    for (var attempt = 0; attempt < 25; attempt++) {
+      shuffle(pool);
+      var idx = 0;
+      var next = draft.teams.map(function () { return [pool[idx++], pool[idx++]]; });
+      // avoid handing back the very same pairing when another one is possible
+      if (pool.length < 4 || pairingFingerprint(next) !== before || attempt === 24) {
+        draft.teams = next;
+        break;
+      }
+    }
+
+    confirmRandomize = false;
+    errorBox.textContent = "";
+    drawList(); refreshAll();
+  }
+
   function setCount(k) {
     syncNames();
     k = Math.max(minC(), Math.min(maxC(), k));
-    var arr = isPairs() ? draft.teams : draft.names;
-    while (arr.length > k) stash.push(arr.pop());
-    while (arr.length < k) arr.push(stash.length ? stash.pop() : (isPairs() ? ["", ""] : ""));
+    if (isPairs()) {
+      // players and team name belong together, so they grow and shrink as one
+      while (draft.teams.length > k) {
+        stash.push({ t: draft.teams.pop(), n: draft.teamNames.pop() });
+      }
+      while (draft.teams.length < k) {
+        var s = stash.pop();
+        draft.teams.push(s ? s.t : ["", ""]);
+        draft.teamNames.push(s ? s.n : "");
+      }
+    } else {
+      while (draft.names.length > k) stash.push(draft.names.pop());
+      while (draft.names.length < k) draft.names.push(stash.length ? stash.pop() : "");
+    }
+    errorBox.textContent = "";
+    drawList(); refreshAll();
+  }
+
+  function setEntry(mode) {
+    if (draft.entry === mode) return;
+    syncNames();
+    draft.entry = mode;
+    confirmRandomize = false;
     errorBox.textContent = "";
     drawList(); refreshAll();
   }
@@ -729,6 +827,7 @@ function renderSetup() {
     syncNames();
     draft.format = f;
     stash = [];
+    confirmRandomize = false;
     draft.courts = 1;
     draft.roundsTouched = false;
     errorBox.textContent = "";
@@ -785,21 +884,41 @@ function renderSetup() {
     countLabel.textContent = isPairs() ? "Number of teams" : "Number of players";
     listLabel.textContent  = isPairs() ? "Teams" : "Players";
 
+    // fixed pairs only: name the two players, or just name the team
+    entryBlock.innerHTML = "";
+    if (isPairs()) {
+      entryWrap.innerHTML = "";
+      [["players", "Player names"], ["teamnames", "Team names"]].forEach(function (m) {
+        entryWrap.appendChild(el("button", {
+          cls: "seg-btn" + (draft.entry === m[0] ? " on" : ""), type: "button", text: m[1],
+          onclick: function () { setEntry(m[0]); }
+        }));
+      });
+      entryBlock.appendChild(el("div", { cls: "field-label", text: "Name teams by" }));
+      entryBlock.appendChild(entryWrap);
+      entryBlock.appendChild(el("div", { cls: "seg-note", text: byTeamName()
+        ? "One field per team — half the typing. Individual players are not tracked in this format anyway, only the team is."
+        : "Two players per team; the team is shown as “A & B”." }));
+    }
+
     if (!countEditing) countInput.value = String(count());
     countInput.setAttribute("min", String(minC()));
     countInput.setAttribute("max", String(maxC()));
     minusBtn.disabled = count() <= minC();
     plusBtn.disabled  = count() >= maxC();
 
-    var blanks = 0;
-    if (isPairs()) draft.teams.forEach(function (t) { t.forEach(function (s) { if (s.trim() === "") blanks++; }); });
+    var blanks = 0, word = "Player";
+    if (byTeamName()) { draft.teamNames.forEach(function (s) { if (s.trim() === "") blanks++; }); word = "Team"; }
+    else if (isPairs()) draft.teams.forEach(function (t) { t.forEach(function (s) { if (s.trim() === "") blanks++; }); });
     else draft.names.forEach(function (s) { if (s.trim() === "") blanks++; });
     countNote.textContent = minC() + "–" + maxC() + (isPairs() ? " teams." : " players.")
       + (blanks ? " " + blanks + " unnamed " + (blanks === 1 ? "slot becomes" : "slots become")
-                  + " “Player 1”, “Player 2” … automatically." : "");
+                  + " “" + word + " 1”, “" + word + " 2” … automatically." : "");
 
-    roundsInput.value = String(draft.rounds);
+    if (!roundsEditing) roundsInput.value = String(draft.rounds);
     roundsInput.setAttribute("max", String(mr));
+    roundsMinus.disabled = draft.rounds <= 1;
+    roundsPlus.disabled  = draft.rounds >= mr;
     roundsNote.textContent = "Max " + mr + " — the complete tournament."
       + (draft.rounds < mr ? " Shortened to " + draft.rounds + "." : "");
 
@@ -809,7 +928,7 @@ function renderSetup() {
       var totalMatches = (T * (T - 1)) / 2;
       var perRound = Math.min(draft.courts, Math.floor(T / 2));
       var planned = Math.min(totalMatches, draft.rounds * perRound);
-      preview.textContent = T + " teams (" + (T * 2) + " players) on " + draft.courts
+      preview.textContent = T + " teams" + (byTeamName() ? "" : " (" + (T * 2) + " players)") + " on " + draft.courts
         + (draft.courts === 1 ? " court" : " courts")
         + " · " + (perRound * 2) + " of " + T + " teams playing per round"
         + " · " + draft.rounds + " rounds"
@@ -828,10 +947,27 @@ function renderSetup() {
         + (willCover === totalPairs ? " (complete)" : "");
     }
 
-    var ab = document.getElementById("add-entity-btn");
-    if (ab) {
-      ab.disabled = count() >= maxC();
-      ab.textContent = isPairs() ? "+ Add team" : "+ Add player";
+    addBtn.disabled = count() >= maxC();
+    addBtn.textContent = isPairs() ? "+ Add team" : "+ Add player";
+
+    // action row: add button, plus the randomiser when playing fixed pairs
+    actionsRow.innerHTML = "";
+    if (confirmRandomize) {
+      actionsRow.appendChild(el("span", { cls: "confirm-inline",
+        text: "Do you really want to randomize the teams?" }));
+      actionsRow.appendChild(el("button", { cls: "btn btn-danger btn-lg", type: "button",
+        text: "Yes, randomize", onclick: randomizeTeams }));
+      actionsRow.appendChild(el("button", { cls: "btn btn-ghost btn-lg", type: "button",
+        text: "Cancel", onclick: function () { confirmRandomize = false; refreshAll(); } }));
+    } else {
+      actionsRow.appendChild(addBtn);
+      if (isPairs() && !byTeamName()) {
+        actionsRow.appendChild(el("button", { cls: "btn btn-ghost btn-lg", type: "button",
+          text: "⇄ Randomize teams",
+          onclick: function () { syncNames(); confirmRandomize = true; refreshAll(); } }));
+        actionsRow.appendChild(el("div", { cls: "action-hint",
+          text: "Deals everyone into new teams at random. Slots you left blank are filled in as “Player 1”, “Player 2” … and mixed along with the rest." }));
+      }
     }
   }
 
@@ -860,7 +996,26 @@ function renderSetup() {
 
   function drawList() {
     listWrap.innerHTML = "";
-    if (isPairs()) {
+    if (byTeamName()) {
+      draft.teamNames.forEach(function (name, i) {
+        var input = nameField(name, "Team " + (i + 1),
+          function (v) { draft.teamNames[i] = v; }, focusNext);
+        input.setAttribute("maxlength", "24");
+        var remove = el("button", { cls: "icon-btn", type: "button", title: "Remove team",
+          onclick: function () {
+            syncNames();
+            if (draft.teamNames.length <= MIN_TEAMS) return;
+            draft.teamNames.splice(i, 1);
+            draft.teams.splice(i, 1);
+            drawList(); refreshAll();
+          } });
+        remove.textContent = "×";
+        remove.disabled = draft.teamNames.length <= MIN_TEAMS;
+        listWrap.appendChild(el("div", { cls: "player-row" }, [
+          el("span", { cls: "player-num", text: (i + 1) + "." }), input, remove
+        ]));
+      });
+    } else if (isPairs()) {
       draft.teams.forEach(function (team, i) {
         var i1 = nameField(team[0], "Player " + (2 * i + 1),
           function (v) { draft.teams[i][0] = v; }, focusNext);
@@ -871,6 +1026,7 @@ function renderSetup() {
             syncNames();
             if (draft.teams.length <= MIN_TEAMS) return;
             draft.teams.splice(i, 1);
+            draft.teamNames.splice(i, 1);
             drawList(); refreshAll();
           } });
         remove.textContent = "×";
@@ -916,16 +1072,29 @@ function renderSetup() {
   minusBtn.addEventListener("click", function () { setCount(count() - 1); });
   plusBtn.addEventListener("click", function () { setCount(count() + 1); });
 
+  roundsInput.addEventListener("focus", function () { roundsEditing = true; });
+  roundsInput.addEventListener("blur", function () {
+    roundsEditing = false;
+    var v = parseInt(roundsInput.value, 10);
+    setRounds(isNaN(v) ? draft.rounds : v);
+  });
   roundsInput.addEventListener("input", function () {
     var v = parseInt(roundsInput.value, 10);
     draft.roundsTouched = true;
-    if (!isNaN(v)) draft.rounds = v;
-    var mr = maxRounds();
-    if (!isNaN(v) && (v < 1 || v > mr)) {
-      draft.rounds = Math.max(1, Math.min(mr, v));
-      roundsInput.value = String(draft.rounds);
-    }
-    refreshAll();
+    // an empty or out-of-range field is left alone while typing and only
+    // corrected when the field is left, so the value can actually be deleted
+    if (!isNaN(v) && v >= 1 && v <= maxRounds()) setRounds(v);
+    else refreshAll();
+  });
+  roundsMinus.addEventListener("click", function () { setRounds(draft.rounds - 1); });
+  roundsPlus.addEventListener("click", function () { setRounds(draft.rounds + 1); });
+
+  // tapping a number field selects its contents, so typing replaces the value
+  // instead of appending to it — this matters on phones
+  [countInput, roundsInput].forEach(function (inp) {
+    inp.addEventListener("focus", function () {
+      try { inp.select(); } catch (e) {}
+    });
   });
 
   var addBtn = el("button", { cls: "btn btn-ghost btn-lg", type: "button", id: "add-entity-btn",
@@ -943,23 +1112,23 @@ function renderSetup() {
 
   function start() {
     syncNames();
-    var counter = 0;
-    var fill = function (s) {
-      counter++;
-      var v = s.trim();
-      return v === "" ? "Player " + counter : v;
-    };
 
     var allNames, teams = null, players = null;
-    if (isPairs()) {
-      teams = draft.teams.map(function (t) {
-        var a = fill(t[0]), b = fill(t[1]);
-        return { players: [a, b], label: a + " & " + b };
-      });
-      allNames = [];
-      teams.forEach(function (t) { allNames.push(t.players[0], t.players[1]); });
+    if (byTeamName()) {
+      var labels = fillNames(draft.teamNames, "Team");
+      teams = labels.map(function (l) { return { players: [l], label: l }; });
+      allNames = labels;
+    } else if (isPairs()) {
+      var flat = [];
+      draft.teams.forEach(function (t) { flat.push(t[0], t[1]); });
+      allNames = fillNames(flat);
+      teams = [];
+      for (var q = 0; q < allNames.length; q += 2) {
+        teams.push({ players: [allNames[q], allNames[q + 1]],
+                     label: allNames[q] + " & " + allNames[q + 1] });
+      }
     } else {
-      players = draft.names.map(fill);
+      players = fillNames(draft.names);
       allNames = players;
     }
 
@@ -994,6 +1163,7 @@ function renderSetup() {
       }
       state = {
         format: draft.format,
+        entry: draft.entry,
         scoring: draft.scoring,
         courts: Math.min(draft.courts, maxCourtsFor(draft)),
         players: players,
@@ -1015,15 +1185,16 @@ function renderSetup() {
       hintText,
       countLabel,
       el("div", { cls: "count-row" }, [minusBtn, countInput, plusBtn, countNote]),
+      entryBlock,
       listLabel,
       listWrap,
-      el("div", { cls: "setup-actions" }, [addBtn])
+      actionsRow
     ]),
     el("div", { cls: "setup-card" }, [
       el("div", { cls: "field-label", text: "Courts" }),
       courtsWrap,
       el("div", { cls: "field-label", text: "Rounds", style: "margin-top:18px" }),
-      el("div", { cls: "rounds-row" }, [roundsInput, roundsNote]),
+      el("div", { cls: "rounds-row" }, [roundsMinus, roundsInput, roundsPlus, roundsNote]),
       el("div", { cls: "field-label", text: "Scoring", style: "margin-top:18px" }),
       scoringWrap, scoringNote
     ]),
@@ -1073,10 +1244,16 @@ function renderTournament() {
       onclick: function () {
         draft = freshDraft();
         draft.format = state.format;
+        draft.entry = state.entry === "teamnames" ? "teamnames" : "players";
         draft.scoring = state.scoring;
         draft.courts = state.courts;
         if (state.format === "pairs") {
-          draft.teams = state.teams.map(function (t) { return t.players.slice(); });
+          draft.teamNames = state.teams.map(function (t) {
+            return draft.entry === "teamnames" ? t.label : "";
+          });
+          draft.teams = state.teams.map(function (t) {
+            return draft.entry === "teamnames" ? ["", ""] : t.players.slice();
+          });
         } else {
           draft.names = state.players.slice();
         }
